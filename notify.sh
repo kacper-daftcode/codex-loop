@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Notyfikator fire-and-forget. Zawsze loguje do logs/notify.log; gdy jest
-# signal.number i signal-cli, wysyla wiadomosc na Signal (Note to Self).
+# Fire-and-forget notifier. Always appends to logs/notify.log; if
+# signal.number and signal-cli exist, also sends the message over Signal
+# (Note to Self).
 set -u
 BASE="$(cd "$(dirname "$0")" && pwd)"
 NAME="${CODEXLOOP_NOTIFIER_NAME:-$(grep -E '^NAME=' "$BASE/codexloop.conf" 2>/dev/null | cut -d= -f2-)}"

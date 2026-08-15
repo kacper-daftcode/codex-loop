@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Instalator deploymentu codexloop.
+# codexloop deployment installer.
 #
-# Uzycie:
-#   bash install.sh /path/to/project [--name NAZWA] [--start] [--no-systemd]
-#                                   [--with-signal | --no-signal(domyślne)]
+# Usage:
+#   bash install.sh /path/to/project [--name NAME] [--start] [--no-systemd]
+#                                    [--with-signal | --no-signal (default)]
 #
-# Tworzy <project>/codexloop/ (conf + skrypty + logi/state), jednostke systemd
-# codexloop-<name>.service i opcjonalnie ja uruchamia. Istniejacego conf nie
-# nadpisuje.
+# Creates <project>/codexloop/ (conf + scripts + logs/state), a systemd unit
+# codexloop-<name>.service, and optionally starts it. An existing conf is
+# never overwritten.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -25,20 +25,20 @@ while [ $# -gt 0 ]; do
     --with-signal) WITH_SIGNAL=1; shift;;
     --no-signal) WITH_SIGNAL=0; shift;;
     -h|--help)
-      sed -n '2,10p' "$0"; exit 0;;
+      sed -n '2,11p' "$0"; exit 0;;
     *) PROJECT="$1"; shift;;
   esac
 done
 
 if [ -z "$PROJECT" ]; then
-  echo "podaj katalog projektu: bash install.sh /path/to/project [--name N] [--start]" >&2
+  echo "usage: bash install.sh /path/to/project [--name NAME] [--start]" >&2
   exit 2
 fi
 PROJECT="$(realpath "$PROJECT")"
 NAME="${NAME:-$(basename "$PROJECT")}"
 DEST="$PROJECT/codexloop"
 
-# --- zaleznosci -----------------------------------------------------
+# --- dependencies -----------------------------------------------------
 MISSING=""
 for dep in python3 screen; do
   command -v "$dep" >/dev/null 2>&1 || MISSING="$MISSING $dep"
@@ -47,19 +47,19 @@ if ! command -v codex >/dev/null 2>&1; then
   MISSING="$MISSING codex(CLI)"
 fi
 if [ -n "$MISSING" ]; then
-  echo "UWAGA: brakujace zaleznosci:$MISSING" >&2
+  echo "WARNING: missing dependencies:$MISSING" >&2
   echo "  (screen: apt-get install screen; codex: npm i -g @openai/codex)" >&2
 fi
 
-# --- trust codexa ----------------------------------------------------
+# --- codex project trust ------------------------------------------------
 CODEX_CFG="$HOME/.codex/config.toml"
 if [ -f "$CODEX_CFG" ] && ! grep -qF "\"$PROJECT\"" "$CODEX_CFG" 2>/dev/null; then
-  echo "UWAGA: dodaj do $CODEX_CFG (unika promptu trust w TUI):" >&2
+  echo "WARNING: add to $CODEX_CFG (avoids the trust prompt blocking the TUI):" >&2
   echo "  [projects.\"$PROJECT\"]" >&2
   echo '  trust_level = "trusted"' >&2
 fi
 
-# --- pliki deploymentu ----------------------------------------------
+# --- deployment files -------------------------------------------------
 mkdir -p "$DEST/logs" "$DEST/state"
 for f in codexloop.py notify.sh watch.py signal-setup.sh; do
   cp "$SRC/$f" "$DEST/$f"
@@ -68,13 +68,12 @@ done
 if [ ! -f "$DEST/codexloop.conf" ]; then
   sed -e "s|^NAME=.*|NAME=$NAME|" -e "s|^PROJECT_DIR=.*|PROJECT_DIR=$PROJECT|" \
       "$SRC/codexloop.conf" > "$DEST/codexloop.conf"
-  echo "utworzono $DEST/codexloop.conf - SPRAWDZ go przed startem"
+  echo "created $DEST/codexloop.conf - REVIEW it before starting"
 else
-  echo "zachowano istniejacy $DEST/codexloop.conf"
+  echo "kept existing $DEST/codexloop.conf"
 fi
 
-# --- systemd ----------------------------------------------------------
-UNIT=""
+# --- systemd --------------------------------------------------------------
 if [ "$USE_SYSTEMD" -eq 1 ]; then
   UNIT="/etc/systemd/system/codexloop-$NAME.service"
   PYBIN="$(command -v python3)"
@@ -97,26 +96,26 @@ RestartSec=30
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  echo "utworzono $UNIT"
+  echo "created $UNIT"
 fi
 
 echo
-echo "Gotowe. Deployment: $DEST"
-echo "  podglad:     $DEST/watch.py       (albo: screen -x codexloop-$NAME)"
-echo "  stop miekki: touch $DEST/STOP"
-echo "  stop twardy: touch $DEST/STOPNOW"
+echo "Done. Deployment: $DEST"
+echo "  watch live:  $DEST/watch.py     (or: screen -x codexloop-$NAME)"
+echo "  soft stop:   touch $DEST/STOP"
+echo "  hard stop:   touch $DEST/STOPNOW"
 if [ "$WITH_SIGNAL" -eq 1 ]; then
-  bash "$DEST/signal-setup.sh" || echo "signal-setup przerwany - powiadomienia zostana w logs/notify.log"
+  bash "$DEST/signal-setup.sh" || echo "signal-setup aborted - alerts will stay in logs/notify.log"
 else
-  echo "  signal:      POMINIETY (opcjonalny; kiedy chcesz: bash $DEST/signal-setup.sh)"
+  echo "  signal:      SKIPPED (optional; whenever you want it: bash $DEST/signal-setup.sh)"
 fi
 if [ "$USE_SYSTEMD" -eq 1 ]; then
   if [ "$DO_START" -eq 1 ]; then
     systemctl enable --now "codexloop-$NAME"
-    echo "  usluga:      codexloop-$NAME (enabled + started)"
+    echo "  service:     codexloop-$NAME (enabled + started)"
   else
-    echo "  usluga:      systemctl enable --now codexloop-$NAME"
+    echo "  service:     systemctl enable --now codexloop-$NAME"
   fi
 else
-  echo "  start reczny: python3 $DEST/codexloop.py"
+  echo "  manual run:  python3 $DEST/codexloop.py"
 fi

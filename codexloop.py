@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""codexloop - autonomiczna petla sesji codex TUI w GNU screen.
+"""codexloop - unattended, continuous codex TUI sessions in GNU screen.
 
-Dzialanie: kazda iteracja otwiera codex TUI w nazwanej sesji screen,
-wstrzykuje prompt i czeka, az agent zamknie sesje markerem ITER_DONE
-(instrukcja doklejana do promptu - patrz EXTRA_SUFFIX). Potem okno jest
-zamykane, pauza, kolejna swieza sesja. Bez konca.
+Each iteration opens the full codex TUI in a named screen session, injects
+the working prompt and waits until the agent itself closes the session via
+the ITER_DONE marker (contract appended to the prompt, see EXTRA_SUFFIX).
+Then the window is closed and a fresh session starts. Forever.
 
-Podglad na zywo:  screen -x <SCREEN_NAME>   (odpiecie: Ctrl-a d)
+Watch live:  screen -x <SCREEN_NAME>   (detach: Ctrl-a d)
 
-Pliki kontrolne w katalogu deploymentu (ten z codexloop.conf):
-  ITER_DONE     - agent go tworzy = naturalny koniec sesji, petla zamyka okno
-  HUMAN_NEEDED  - agent wpisuje "BLOCKED: powod" = notyfikacja
-  STOP          - skoncz biezaca iteracje i wyjdz
-  STOPNOW       - ubij biezace okno natychmiast i wyjdz
-  signal.number - numer telefonu dla notify.sh (signal-setup.sh)
+Control files in the deployment directory (the one holding codexloop.conf):
+  ITER_DONE     - agent creates it = natural session end, loop closes window
+  HUMAN_NEEDED  - agent writes "BLOCKED: reason" here = notification goes out
+  STOP          - finish current iteration, then exit
+  STOPNOW       - terminate the current window immediately, then exit
+  signal.number - phone number used by notify.sh (see signal-setup.sh)
 
-Konfiguracja: codexloop.conf (KEY=VALUE) w tym samym katalogu; petla
-przeladowuje ja miedzy iteracjami (zmiany progow/promptow bez restartu).
+Configuration: codexloop.conf (KEY=VALUE) in the same directory; the loop
+reloads it between iterations (threshold/prompt changes need no restart).
 """
 
 import os
@@ -37,25 +37,25 @@ CONF_FILE = BASE_DIR / "codexloop.conf"
 DEFAULTS = {
     "NAME": BASE_DIR.name,
     "PROJECT_DIR": "",
-    "PROMPT": "zapoznaj sie z projektem i kontynuuj",
+    "PROMPT": "familiarize yourself with the project and continue",
     "EXTRA_SUFFIX": "1",
-    "NATURAL_END_HINT": "ok. 40% kontekstu",
-    # Drugi front: co N-ta iteracja jedzie innym promptem. 0 = wylaczony.
+    "NATURAL_END_HINT": "about 40% of the context window",
+    # Second front: every N-th iteration runs FRONT2_PROMPT. 0 = disabled.
     "FRONT2_EVERY_N": "0",
     "FRONT2_PROMPT": "",
-    "FRONT2_STATE_FILE": "",               # wzgledem do PROJECT_DIR; brak pliku -> front 1
+    "FRONT2_STATE_FILE": "",               # relative to PROJECT_DIR; missing file -> main front
     "CODEX_BIN": "codex",
     "CODEX_ARGS": "--dangerously-bypass-approvals-and-sandbox",
     "SCREEN_NAME": "",
-    # Health-check przed kazda iteracja; puste = zawsze zdrowy.
-    # Przyklad (tunel ssh do vLLM):
+    # Health check before each iteration; empty = always healthy.
+    # Example (ssh tunnel to a vLLM server):
     #   HEALTHCHECK_CMD=python3 -c "import socket; socket.create_connection(('127.0.0.1',18001),5)"
-    #   HEALTHFIX_CMD=systemctl restart kimi-tunnel
+    #   HEALTHFIX_CMD=systemctl restart my-tunnel
     "HEALTHCHECK_CMD": "",
     "HEALTHFIX_CMD": "",
-    "MAX_ITER_MINUTES": "480",             # sesja dluzsza -> ubicie + notify
-    "STALL_NOTIFY_MIN": "45",              # brak nowego outputu TUI tyle minut -> notify
-    "MIN_OK_MINUTES": "20",                # sesja krotsza -> podejrzana -> notify
+    "MAX_ITER_MINUTES": "480",             # longer session -> kill + notify
+    "STALL_NOTIFY_MIN": "45",              # no new TUI output for this long -> notify
+    "MIN_OK_MINUTES": "20",                # shorter session -> suspicious -> notify
     "PAUSE_BETWEEN_ITERS_S": "15",
     "FAIL_BACKOFF_CAP_MIN": "30",
     "READY_WAIT_S": "20",
@@ -64,16 +64,16 @@ DEFAULTS = {
     "REPROMPT_MAX": "6",
 }
 
-# Aliasy wstecznej kompatybilnosci (deployment sm103a uzywa OPT_*).
+# Backward-compat aliases (older deployments used OPT_*).
 ALIASES = {"OPT_EVERY_N": "FRONT2_EVERY_N", "OPT_PROMPT": "FRONT2_PROMPT"}
 
 SUFFIX_TEXT = (
-    " [nota automatu: sesja nadzorowana przez petle codexloop. Pracuj jak "
-    "zwykle. Gdy dojdziesz do naturalnego konca sesji ({hint}), zapisz krotkie "
-    "podsumowanie do {base}/state/LAST_SUMMARY.txt i wykonaj komende: "
-    "touch {base}/ITER_DONE - petla sama zamknie okno i wystartuje nowa sesje. "
-    "Jesli potrzebujesz decyzji czlowieka, wykonaj: "
-    "echo 'BLOCKED: powod' > {base}/HUMAN_NEEDED]"
+    " [automation note: this session is supervised by the codexloop harness. "
+    "Work as usual. When you reach the natural end of the session ({hint}), "
+    "write a short summary to {base}/state/LAST_SUMMARY.txt and run: "
+    "touch {base}/ITER_DONE - the loop will close the window and start a new "
+    "session. If you need a human decision, run: "
+    "echo 'BLOCKED: reason' > {base}/HUMAN_NEEDED]"
 )
 
 
@@ -180,13 +180,13 @@ def iter_front(num):
 
 
 def reload_conf():
-    """Odswieza konfiguracje z pliku miedzy iteracjami (bez restartu uslugi)."""
+    """Re-read config between iterations (no service restart needed)."""
     CONF.clear()
     CONF.update(load_conf())
 
 
 def ensure_healthy():
-    """True gdy srodowisko odpowiada; przy bledzie probuje HEALTHFIX_CMD raz."""
+    """True when the environment answers; on failure tries HEALTHFIX_CMD once."""
     check = CONF.get("HEALTHCHECK_CMD", "")
     if not check.strip():
         return True
@@ -260,8 +260,8 @@ def run_iteration(num):
     with open(err_path, "a") as errf:
         proc = subprocess.Popen(cmd, stdout=errf, stderr=errf)
 
-        # Start TUI + wstrzykniecie promptu. Enter idzie OSOBNYM stuff -
-        # jeden pakiet "tekst+\r" bywa polykany jak paste bez submita.
+        # TUI startup + prompt injection. Enter goes in a SEPARATE stuff -
+        # a single "text+\r" packet can be swallowed like a paste w/o submit.
         time.sleep(float(CONF["READY_WAIT_S"]))
         screen_cmd("-p", "0", "-X", "stuff", prompt)
         time.sleep(2)
@@ -272,6 +272,7 @@ def run_iteration(num):
         start = time.monotonic()
         stall_notified = False
         human_notified = False
+        stream_err_notified = False
         end_grace_deadline = None
         last_hc_scan = 0.0
         idle_strikes = 0
@@ -285,8 +286,8 @@ def run_iteration(num):
             elapsed_min = (now - start) / 60
             dead = proc.poll() is not None
 
-            # Weryfikacja, ze prompt faktycznie ruszyl (deadlock: tekst wisi
-            # w composerze bez submita - wtedy status to wciaz "Context 0%").
+            # Verify the prompt actually started (deadlock: text sits in the
+            # composer un-submitted - status still says "Context 0%").
             if not inject_checked and now - injected_at >= float(CONF["INJECT_VERIFY_S"]):
                 inject_checked = True
                 stuck = False
@@ -299,7 +300,7 @@ def run_iteration(num):
                 except OSError:
                     pass
                 if stuck and not dead:
-                    log(f"iter {num}: TUI bez reakcji po prompcie - dosylam sam Enter")
+                    log(f"iter {num}: TUI did not start the prompt - resending Enter")
                     screen_cmd("-p", "0", "-X", "stuff", "\r")
 
             if stop_mode() == "now" and not dead:
@@ -312,10 +313,10 @@ def run_iteration(num):
                 elapsed_min >= float(CONF["MAX_ITER_MINUTES"])
             ):
                 res.killed_long_run = True
-                log(f"iter {num}: przekroczony MAX_ITER_MINUTES - killing")
+                log(f"iter {num}: MAX_ITER_MINUTES exceeded - killing")
                 notify(
-                    f"{name} iter {num}: sesja trwa ponad "
-                    f"{CONF['MAX_ITER_MINUTES']} min - ubilem"
+                    f"{name} iter {num}: session ran over "
+                    f"{CONF['MAX_ITER_MINUTES']} min - killed"
                 )
                 proc.terminate()
                 continue
@@ -323,34 +324,35 @@ def run_iteration(num):
             if human_f.exists() and not human_notified:
                 human_notified = True
                 res.human_needed = human_f.read_text(errors="replace").strip()[:200]
-                notify(f"{name} iter {num}: agent prosi o czlowieka: {res.human_needed}")
+                notify(f"{name} iter {num}: agent asks for a human: {res.human_needed}")
 
-            # Naturalne zakonczenie zglaszane przez agenta.
+            # Natural end reported by the agent.
             if done_f.exists() and not dead:
                 if end_grace_deadline is None:
-                    end_grace_deadline = now + 20  # daj TUI dopsiac rollout
+                    end_grace_deadline = now + 20  # let the TUI flush its rollout
                     res.done_close = True
-                    log(f"iter {num}: ITER_DONE - zamykam okno za 20 s")
+                    log(f"iter {num}: ITER_DONE - closing the window in 20 s")
                 elif now >= end_grace_deadline:
                     proc.terminate()
                 continue
 
-            # Stall: brak swiezego outputu TUI.
+            # Stall: no fresh TUI output.
             if not dead and screen_log.exists() and not stall_notified:
                 idle_min = (time.time() - screen_log.stat().st_mtime) / 60
                 if idle_min >= float(CONF["STALL_NOTIFY_MIN"]):
                     stall_notified = True
                     res.stalled = True
                     notify(
-                        f"{name} iter {num}: brak nowego outputu od {idle_min:.0f} min "
-                        f"(uplynelo {elapsed_min:.0f} min) - mozliwy stall"
+                        f"{name} iter {num}: no new output for {idle_min:.0f} min "
+                        f"(elapsed {elapsed_min:.0f} min) - possible stall"
                     )
 
             if dead:
                 break
 
-            # Watchdog: tura skonczona ("Worked for"), TUI bezczynne, a agent
-            # nie zamknal sesji markerem ITER_DONE -> doslij "kontynuuj".
+            # Watchdog: TUI sat idle at the prompt after a finished turn
+            # ("Worked for ...") w/o ITER_DONE, or a model-stream error froze
+            # the turn - in both cases the fix is to send "continue".
             if not dead and inject_checked and now - last_hc_scan >= 60:
                 last_hc_scan = now
                 hc = STATE_DIR / "hc.txt"
@@ -361,8 +363,37 @@ def run_iteration(num):
                     txt = ""
                 working = "Working (" in txt
                 idle_prompt = ("Worked for" in txt) and not working
+                errored = not working and any(
+                    p in txt
+                    for p in (
+                        "stream disconnected",
+                        "error sending request",
+                        "stream error:",
+                    )
+                )
                 if working:
                     idle_strikes = 0
+                elif errored and stop_mode() is None:
+                    if not stream_err_notified:
+                        stream_err_notified = True
+                        notify(
+                            f"{name} iter {num}: model stream error - resuming session"
+                        )
+                    if reprompts < int(CONF["REPROMPT_MAX"]) and (
+                        now - last_reprompt >= float(CONF["REPROMPT_MIN_S"])
+                    ):
+                        reprompts += 1
+                        last_reprompt = now
+                        idle_strikes = 0
+                        cont = (
+                            "the session was interrupted by a model stream error; "
+                            "continue from where you stopped (session-end protocol "
+                            "unchanged)"
+                        )
+                        screen_cmd("-p", "0", "-X", "stuff", cont)
+                        time.sleep(2)
+                        screen_cmd("-p", "0", "-X", "stuff", "\r")
+                        log(f"iter {num}: stream-error - resumed #{reprompts}")
                 elif idle_prompt and stop_mode() is None:
                     idle_strikes += 1
                     cm = re.search(r"Context (\d+)% used", txt)
@@ -373,25 +404,25 @@ def run_iteration(num):
                         if pct >= 85 and not high_ctx_notified:
                             high_ctx_notified = True
                             notify(
-                                f"{name} iter {num}: TUI bezczynne przy {pct}% bez "
-                                "ITER_DONE - prawdopodobnie zapomnial markera"
+                                f"{name} iter {num}: TUI idle at {pct}% without "
+                                "ITER_DONE - agent probably forgot the marker"
                             )
                         elif pct < 85:
                             reprompts += 1
                             last_reprompt = now
                             idle_strikes = 0
                             cont = (
-                                "kontynuuj; gdy sesja dojdzie do naturalnego "
-                                f"konca ({CONF['NATURAL_END_HINT']}), zamknij ja "
-                                f"protokolem: podsumowanie do state/LAST_SUMMARY.txt + "
+                                "continue; when the session reaches its natural "
+                                f"end ({CONF['NATURAL_END_HINT']}), close it with "
+                                "the protocol: summary to state/LAST_SUMMARY.txt + "
                                 f"touch {BASE_DIR}/ITER_DONE"
                             )
                             screen_cmd("-p", "0", "-X", "stuff", cont)
                             time.sleep(2)
                             screen_cmd("-p", "0", "-X", "stuff", "\r")
                             log(
-                                f"iter {num}: idle na prompcie (ctx {pct}%) - "
-                                f"doslano 'kontynuuj' #{reprompts}"
+                                f"iter {num}: idle at prompt (ctx {pct}%) - "
+                                f"sent 'continue' #{reprompts}"
                             )
 
         try:
@@ -401,7 +432,7 @@ def run_iteration(num):
             proc.wait()
         res.exit_code = proc.returncode
 
-    screen_cmd("-X", "quit")  # porzadek, gdyby sesja screen osierocila okno
+    screen_cmd("-X", "quit")  # hygiene, in case the screen window got orphaned
 
     res.duration_min = (time.monotonic() - start) / 60
     if summary_f.exists():
@@ -417,29 +448,29 @@ def run_iteration(num):
 def classify_and_report(num, res):
     name, _, _ = conf_resolved()
     text = res.last_message.strip()
-    headline = text.splitlines()[0][:160] if text else "(brak podsumowania)"
-    flagi = []
+    headline = text.splitlines()[0][:160] if text else "(no summary)"
+    flags = []
     if res.done_close:
-        flagi.append("DONE")
+        flags.append("DONE")
     if res.killed_stopnow:
-        flagi.append("STOPNOW")
+        flags.append("STOPNOW")
     if res.killed_long_run:
-        flagi.append("MAX_ITER_MINUTES")
+        flags.append("MAX_ITER_MINUTES")
     if res.screen_died:
-        flagi.append("screen-gone-bez-DONE")
+        flags.append("screen-gone-no-DONE")
     log(
         f"iter {num}: end exit={res.exit_code} dur={res.duration_min:.0f}min "
-        f"{'/'.join(flagi) or 'ok'} | {headline}"
+        f"{'/'.join(flags) or 'ok'} | {headline}"
     )
     problems = []
     if res.killed_stopnow:
-        problems.append("sesja przerwana przez STOPNOW")
+        problems.append("session interrupted by STOPNOW")
     if res.killed_long_run:
-        problems.append("sesja ubita po przekroczeniu MAX_ITER_MINUTES")
+        problems.append("session killed after exceeding MAX_ITER_MINUTES")
     if res.screen_died:
         problems.append(
-            f"okno screen zniknelo bez markera ITER_DONE (exit {res.exit_code}) - "
-            "TUI padlo albo sesja skonczyla sie bez zamkniecia"
+            f"screen window vanished without the ITER_DONE marker "
+            f"(exit {res.exit_code}) - TUI crashed or session ended without closing"
         )
         err_path = LOG_DIR / f"iter-{num:04d}.stderr.txt"
         if err_path.exists():
@@ -449,11 +480,11 @@ def classify_and_report(num, res):
     if res.duration_min < float(CONF["MIN_OK_MINUTES"]) and not (
         res.killed_stopnow or res.killed_long_run
     ):
-        problems.append(f"sesja podejrzanie krotka ({res.duration_min:.0f} min)")
+        problems.append(f"suspiciously short session ({res.duration_min:.0f} min)")
     if res.human_needed:
-        problems.append(f"agent prosil o czlowieka: {res.human_needed}")
+        problems.append(f"agent asked for a human: {res.human_needed}")
     if problems:
-        notify(f"{name} iter {num} NIESTANDARDOWA: " + " ;; ".join(problems))
+        notify(f"{name} iter {num} NON-STANDARD: " + " ;; ".join(problems))
         return False
     return True
 
@@ -473,7 +504,7 @@ def main():
     LOG_DIR.mkdir(exist_ok=True)
     num = next_iter_num()
     log(f"codexloop start, next iter = {num}, pid={os.getpid()}")
-    notify(f"{name}: petla wystartowala (kolejna iteracja: {num})")
+    notify(f"{name}: loop started (next iteration: {num})")
 
     consec_fail = 0
     while True:
@@ -491,8 +522,8 @@ def main():
             consec_fail += 1
             wait = min(5 * consec_fail, float(CONF["FAIL_BACKOFF_CAP_MIN"]))
             notify(
-                f"{name}: healthcheck dalej FAIL po probie naprawy; "
-                f"ponawiam za {wait:.0f} min"
+                f"{name}: healthcheck still FAIL after the fix attempt; "
+                f"retrying in {wait:.0f} min"
             )
             time.sleep(wait * 60)
             continue
