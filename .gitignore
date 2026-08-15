@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+logs/
+state/
+codexloop.lock
+signal.number
+STOP
+STOPNOW
+ITER_DONE
+HUMAN_NEEDED
