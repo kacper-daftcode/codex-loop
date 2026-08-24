@@ -276,7 +276,10 @@ def run_iteration(num):
     if CONF["EXTRA_SUFFIX"] == "1":
         prompt += SUFFIX_TEXT.format(base=BASE_DIR, hint=CONF["NATURAL_END_HINT"])
 
-    inner = f"cd {shlex.quote(project)} && exec {CONF['CODEX_BIN']} {CONF['CODEX_ARGS']}"
+    extra = shlex.split(CONF.get("EXEC_EXTRA_ARGS") or "")
+    brain, env, codex_bin, extra = alt_brain(num, extra)
+    inner_args = shlex.join(extra)
+    inner = f"cd {shlex.quote(project)} && exec {codex_bin} {CONF['CODEX_ARGS']} {inner_args}".replace("  ", " ")
     cmd = [
         "screen", "-DmS", screen,
         "-L", "-Logfile", str(screen_log),
@@ -586,6 +589,42 @@ def main():
         num += 1
 
 
+
+def alt_brain(num, extra):
+    """ALT rotation (exec + TUI): the N-th iteration of each cycle runs on the
+    alternate provider. Returns (brain_name_or_None, env, codex_bin, extra).
+    extra/env are unchanged (or mutated copies) for brain=None."""
+    brain = None
+    env = None
+    codex_bin = CONF["CODEX_BIN"]
+    every = int(CONF.get("ALT_MODEL_EVERY_N") or 0)
+    if every > 0 and CONF.get("ALT_MODEL") and (num % every) == (every - 1):
+        brain = CONF["ALT_MODEL"]
+        extra = list(extra)
+        extra += ["-c", f"model={brain}"]
+        if CONF.get("ALT_PROVIDER"):
+            extra += ["-c", f"model_provider={CONF['ALT_PROVIDER']}"]
+        if CONF.get("ALT_MODEL_CONTEXT_WINDOW"):
+            extra += ["-c", f"model_context_window={CONF['ALT_MODEL_CONTEXT_WINDOW']}"]
+        if CONF.get("ALT_REASONING_EFFORT"):
+            extra += ["-c", f"model_reasoning_effort={CONF['ALT_REASONING_EFFORT']}"]
+        if CONF.get("ALT_CODEX_BIN"):
+            codex_bin = CONF["ALT_CODEX_BIN"]
+        env = os.environ.copy()
+        key_path = CONF.get("ALT_API_KEY_FILE")
+        if brain and key_path:
+            try:
+                with open(key_path) as kf:
+                    for line in kf:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, _, v = line.partition("=")
+                            env[k.strip()] = v.strip()
+            except OSError as e:
+                log(f"ALT_API_KEY_FILE {key_path}: {e} (alt-brain may 401)" )
+    return brain, env, codex_bin, extra
+
+
 def run_iteration_exec(num):
     """EXEC_MODE: one-shot `codex exec` per iteration (no screen, no TUI).
 
@@ -618,37 +657,7 @@ def run_iteration_exec(num):
     )
 
     extra = shlex.split(CONF.get("EXEC_EXTRA_ARGS") or "--skip-git-repo-check")
-
-    # ALT rotation: the N-th iteration of each cycle runs on the alternate brain.
-    brain = None
-    every = int(CONF.get("ALT_MODEL_EVERY_N") or 0)
-    if every > 0 and CONF.get("ALT_MODEL") and (num % every) == (every - 1):
-        brain = CONF["ALT_MODEL"]
-        extra += ["-c", f"model={brain}"]
-        if CONF.get("ALT_PROVIDER"):
-            extra += ["-c", f"model_provider={CONF['ALT_PROVIDER']}"]
-        if CONF.get("ALT_MODEL_CONTEXT_WINDOW"):
-            extra += ["-c", f"model_context_window={CONF['ALT_MODEL_CONTEXT_WINDOW']}"]
-        if CONF.get("ALT_REASONING_EFFORT"):
-            extra += ["-c", f"model_reasoning_effort={CONF['ALT_REASONING_EFFORT']}"]
-
-    env = os.environ.copy()
-    key_path = CONF.get("ALT_API_KEY_FILE")
-    if brain and key_path:
-        loaded = 0
-        with open(key_path) as kf:
-            for line in kf:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    env[k.strip()] = v.strip()
-                    loaded += 1
-        if loaded == 0:
-            log(f"iter {num}: WARN ALT_API_KEY_FILE {key_path} yielded 0 keys")
-
-    codex_bin = CONF["CODEX_BIN"]
-    if brain and CONF.get("ALT_CODEX_BIN"):
-        codex_bin = CONF["ALT_CODEX_BIN"]
+    brain, env, codex_bin, extra = alt_brain(num, extra)
     cmd = [codex_bin, "exec", *extra, *shlex.split(CONF["CODEX_ARGS"]), prompt]
     log(f"iter {num}: start [front={front}] (exec-mode, brain={brain or 'default'})")
     with open(screen_log, "ab") as outf, open(err_path, "ab") as errf:
