@@ -39,13 +39,33 @@ DEFAULTS = {
     "PROJECT_DIR": "",
     "PROMPT": "familiarize yourself with the project and continue",
     "EXTRA_SUFFIX": "1",
-    "NATURAL_END_HINT": "about 40% of the context window",
+    "NATURAL_END_HINT": (
+        "about 30% of the context window (model quality degrades noticeably "
+        "past 40% - never cross that line; closing earlier is fine)"
+    ),
+    # Past this % of used context the loop stops sending "continue" and instead
+    # orders an immediate protocol close (wrap-up needs the remaining room).
+    "WRAP_CTX_PCT": "35",
     # Second front: every N-th iteration runs FRONT2_PROMPT. 0 = disabled.
     "FRONT2_EVERY_N": "0",
     "FRONT2_PROMPT": "",
     "FRONT2_STATE_FILE": "",               # relative to PROJECT_DIR; missing file -> main front
     "CODEX_BIN": "codex",
     "CODEX_ARGS": "--dangerously-bypass-approvals-and-sandbox",
+    # EXEC_MODE=1: one-shot `codex exec` per iteration instead of TUI+screen
+    # (for hosts where the TUI layer is broken - see TUI-SILENT-DISCARD).
+    "EXEC_MODE": "0",
+    "EXEC_EXTRA_ARGS": "--skip-git-repo-check",
+    # ALT model A/B rotation (exec-mode only; default 0 = off). The N-th
+    # iteration of each cycle spawns codex on the alternate provider. The
+    # provider block must exist in ~/.codex/config.toml; API keys are read
+    # OUT-OF-REPO from ALT_API_KEY_FILE (KEY=VALUE lines, chmod 600).
+    "ALT_MODEL_EVERY_N": "0",
+    "ALT_MODEL": "",
+    "ALT_PROVIDER": "",
+    "ALT_MODEL_CONTEXT_WINDOW": "",
+    "ALT_REASONING_EFFORT": "",
+    "ALT_API_KEY_FILE": "",
     "SCREEN_NAME": "",
     # Health check before each iteration; empty = always healthy.
     # Example (ssh tunnel to a vLLM server):
@@ -233,6 +253,8 @@ class IterResult:
 
 
 def run_iteration(num):
+    if CONF.get("EXEC_MODE") == "1":
+        return run_iteration_exec(num)
     name, screen, project = conf_resolved()
     res = IterResult()
     screen_log = LOG_DIR / f"iter-{num:04d}.screen.log"
@@ -407,7 +429,26 @@ def run_iteration(num):
                                 f"{name} iter {num}: TUI idle at {pct}% without "
                                 "ITER_DONE - agent probably forgot the marker"
                             )
-                        elif pct < 85:
+                        elif pct >= int(CONF["WRAP_CTX_PCT"]):
+                            reprompts += 1
+                            last_reprompt = now
+                            idle_strikes = 0
+                            cont = (
+                                f"the session context is already deep ({pct}%) and "
+                                "model quality degrades noticeably past 40% - do "
+                                "NOT start new work; close the session NOW with "
+                                "the protocol: summary to "
+                                f"{BASE_DIR}/state/LAST_SUMMARY.txt + touch "
+                                f"{BASE_DIR}/ITER_DONE"
+                            )
+                            screen_cmd("-p", "0", "-X", "stuff", cont)
+                            time.sleep(2)
+                            screen_cmd("-p", "0", "-X", "stuff", "\r")
+                            log(
+                                f"iter {num}: idle at prompt (ctx {pct}%) - "
+                                f"sent 'close-session' #{reprompts}"
+                            )
+                        else:
                             reprompts += 1
                             last_reprompt = now
                             idle_strikes = 0
@@ -541,5 +582,128 @@ def main():
         num += 1
 
 
+def run_iteration_exec(num):
+    """EXEC_MODE: one-shot `codex exec` per iteration (no screen, no TUI).
+
+    Same contract as the TUI path: agent closes with LAST_SUMMARY + ITER_DONE,
+    STOP/STOPNOW/MAX_ITER_MINUTES/stall-notify preserved. Reprompt rules do not
+    apply (there is no composer); each process exit is the iteration end.
+    """
+    name, screen, project = conf_resolved()
+    res = IterResult()
+    screen_log = LOG_DIR / f"iter-{num:04d}.screen.log"
+    last_path = LOG_DIR / f"iter-{num:04d}.last.txt"
+    err_path = LOG_DIR / f"iter-{num:04d}.stderr.txt"
+    done_f = BASE_DIR / "ITER_DONE"
+    human_f = BASE_DIR / "HUMAN_NEEDED"
+    summary_f = STATE_DIR / "LAST_SUMMARY.txt"
+    for f in (done_f, human_f, summary_f):
+        f.unlink(missing_ok=True)
+    STATE_DIR.mkdir(exist_ok=True)
+
+    front = iter_front(num)
+    prompt = CONF["FRONT2_PROMPT"] if front == "front2" else CONF["PROMPT"]
+    if CONF["EXTRA_SUFFIX"] == "1":
+        prompt += SUFFIX_TEXT.format(base=BASE_DIR, hint=CONF["NATURAL_END_HINT"])
+    prompt += (
+        " [automation note: this iteration runs as a one-shot `codex exec` "
+        "(non-interactive, no follow-up injection possible). Work fully "
+        "autonomously until the natural end (see the context hint above), then "
+        "finish with the session-end protocol; the harness closes the process "
+        "a few seconds after ITER_DONE appears.]"
+    )
+
+    extra = shlex.split(CONF.get("EXEC_EXTRA_ARGS") or "--skip-git-repo-check")
+
+    # ALT rotation: the N-th iteration of each cycle runs on the alternate brain.
+    brain = None
+    every = int(CONF.get("ALT_MODEL_EVERY_N") or 0)
+    if every > 0 and CONF.get("ALT_MODEL") and (num % every) == (every - 1):
+        brain = CONF["ALT_MODEL"]
+        extra += ["-c", f"model={brain}"]
+        if CONF.get("ALT_PROVIDER"):
+            extra += ["-c", f"model_provider={CONF['ALT_PROVIDER']}"]
+        if CONF.get("ALT_MODEL_CONTEXT_WINDOW"):
+            extra += ["-c", f"model_context_window={CONF['ALT_MODEL_CONTEXT_WINDOW']}"]
+        if CONF.get("ALT_REASONING_EFFORT"):
+            extra += ["-c", f"model_reasoning_effort={CONF['ALT_REASONING_EFFORT']}"]
+
+    env = os.environ.copy()
+    key_path = CONF.get("ALT_API_KEY_FILE")
+    if brain and key_path:
+        loaded = 0
+        with open(key_path) as kf:
+            for line in kf:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    env[k.strip()] = v.strip()
+                    loaded += 1
+        if loaded == 0:
+            log(f"iter {num}: WARN ALT_API_KEY_FILE {key_path} yielded 0 keys")
+
+    cmd = [CONF["CODEX_BIN"], "exec", *extra, *shlex.split(CONF["CODEX_ARGS"]), prompt]
+    log(f"iter {num}: start [front={front}] (exec-mode, brain={brain or 'default'})")
+    with open(screen_log, "ab") as outf, open(err_path, "ab") as errf:
+        proc = subprocess.Popen(cmd, cwd=project, stdout=outf, stderr=errf, env=env)
+        start = time.monotonic()
+        stall_notified = False
+        human_notified = False
+        end_grace_deadline = None
+        while True:
+            time.sleep(5)
+            now = time.monotonic()
+            dead = proc.poll() is not None
+            if stop_mode() == "now" and not dead:
+                log(f"iter {num}: STOPNOW - terminating exec")
+                res.killed_stopnow = True
+                proc.terminate()
+                continue
+            if not dead and (now - start) / 60 >= float(CONF["MAX_ITER_MINUTES"]):
+                res.killed_long_run = True
+                log(f"iter {num}: exceeded MAX_ITER_MINUTES - killing")
+                proc.terminate()
+                continue
+            if human_f.exists() and not human_notified:
+                human_notified = True
+                res.human_needed = human_f.read_text(errors="replace").strip()[:200]
+                notify(f"iter {num}: agent asks for a human: {res.human_needed}")
+            if done_f.exists() and not dead:
+                if end_grace_deadline is None:
+                    end_grace_deadline = now + 20
+                    res.done_close = True
+                    log(f"iter {num}: ITER_DONE - closing exec in 20 s")
+                elif now >= end_grace_deadline:
+                    proc.terminate()
+                continue
+            if not dead and screen_log.exists() and not stall_notified:
+                mts = [screen_log.stat().st_mtime]
+                if err_path.exists():
+                    mts.append(err_path.stat().st_mtime)
+                idle_min = (time.time() - max(mts)) / 60
+                if idle_min >= float(CONF["STALL_NOTIFY_MIN"]):
+                    stall_notified = True
+                    res.stalled = True
+                    notify(
+                        f"iter {num}: no new exec output for {idle_min:.0f} min "
+                        f"({(now - start) / 60:.0f} min elapsed) - possible stall"
+                    )
+            if dead:
+                break
+    try:
+        proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    res.exit_code = proc.returncode
+    res.duration_min = (time.monotonic() - start) / 60
+    if summary_f.exists():
+        res.last_message = summary_f.read_text(errors="replace")[-4000:]
+        last_path.write_text(res.last_message)
+    if not done_f.exists() and not (res.killed_stopnow or res.killed_long_run):
+        res.screen_died = True
+    done_f.unlink(missing_ok=True)
+    human_f.unlink(missing_ok=True)
+    return res
 if __name__ == "__main__":
     sys.exit(main())
