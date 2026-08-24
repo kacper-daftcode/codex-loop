@@ -66,6 +66,10 @@ DEFAULTS = {
     "ALT_MODEL_CONTEXT_WINDOW": "",
     "ALT_REASONING_EFFORT": "",
     "ALT_API_KEY_FILE": "",
+    # Some providers need an older wire protocol (e.g. chat-completions) than
+    # the pinned codex binary accepts: ALT_CODEX_BIN swaps the binary for the
+    # alternate-brain iterations.
+    "ALT_CODEX_BIN": "",
     "SCREEN_NAME": "",
     # Health check before each iteration; empty = always healthy.
     # Example (ssh tunnel to a vLLM server):
@@ -642,7 +646,10 @@ def run_iteration_exec(num):
         if loaded == 0:
             log(f"iter {num}: WARN ALT_API_KEY_FILE {key_path} yielded 0 keys")
 
-    cmd = [CONF["CODEX_BIN"], "exec", *extra, *shlex.split(CONF["CODEX_ARGS"]), prompt]
+    codex_bin = CONF["CODEX_BIN"]
+    if brain and CONF.get("ALT_CODEX_BIN"):
+        codex_bin = CONF["ALT_CODEX_BIN"]
+    cmd = [codex_bin, "exec", *extra, *shlex.split(CONF["CODEX_ARGS"]), prompt]
     log(f"iter {num}: start [front={front}] (exec-mode, brain={brain or 'default'})")
     with open(screen_log, "ab") as outf, open(err_path, "ab") as errf:
         proc = subprocess.Popen(cmd, cwd=project, stdout=outf, stderr=errf, env=env)
