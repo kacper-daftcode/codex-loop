@@ -277,6 +277,8 @@ def run_iteration(num):
         prompt += SUFFIX_TEXT.format(base=BASE_DIR, hint=CONF["NATURAL_END_HINT"])
 
     extra = shlex.split(CONF.get("EXEC_EXTRA_ARGS") or "")
+    if extra == ["--skip-git-repo-check"]:
+        extra = []  # exec-subcommand-only flag; TUI rejects it
     brain, env, codex_bin, extra = alt_brain(num, extra)
     inner_args = shlex.join(extra)
     inner = f"cd {shlex.quote(project)} && exec {codex_bin} {CONF['CODEX_ARGS']} {inner_args}".replace("  ", " ")
