@@ -52,6 +52,7 @@ DEFAULTS = {
     "FRONT2_STATE_FILE": "",               # relative to PROJECT_DIR; missing file -> main front
     "CODEX_BIN": "codex",
     "CODEX_ARGS": "--dangerously-bypass-approvals-and-sandbox",
+    "TUI_EXTRA_ARGS": "--no-daemon",
     # EXEC_MODE=1: one-shot `codex exec` per iteration instead of TUI+screen
     # (for hosts where the TUI layer is broken - see TUI-SILENT-DISCARD).
     "EXEC_MODE": "0",
@@ -143,6 +144,23 @@ def conf_resolved():
 
 def now_iso():
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+CONTEXT_PERCENT_RE = re.compile(
+    r"\b(?:Context\s+)?(\d{1,3})%\s+(?:context\s+)?(used|left)\b",
+    re.IGNORECASE,
+)
+
+
+def context_used_percent(text):
+    matches = list(CONTEXT_PERCENT_RE.finditer(text))
+    if not matches:
+        return None
+    match = matches[-1]
+    percent = int(match.group(1))
+    if percent > 100:
+        return None
+    return percent if match.group(2).lower() == "used" else 100 - percent
 
 
 def log(msg):
@@ -279,6 +297,7 @@ def run_iteration(num):
     extra = shlex.split(CONF.get("EXEC_EXTRA_ARGS") or "")
     if extra == ["--skip-git-repo-check"]:
         extra = []  # exec-subcommand-only flag; TUI rejects it
+    extra.extend(shlex.split(CONF.get("TUI_EXTRA_ARGS") or ""))
     brain, env, codex_bin, extra = alt_brain(num, extra)
     inner_args = shlex.join(extra)
     inner = f"cd {shlex.quote(project)} && exec {codex_bin} {CONF['CODEX_ARGS']} {inner_args}".replace("  ", " ")
@@ -327,7 +346,7 @@ def run_iteration(num):
                     screen_cmd("-p", "0", "-X", "hardcopy", str(hc))
                     time.sleep(1)
                     txt = hc.read_text(errors="replace")
-                    stuck = ("Context 0% used" in txt) and ("Working" not in txt)
+                    stuck = context_used_percent(txt) == 0 and "Working" not in txt
                 except OSError:
                     pass
                 if stuck and not dead:
@@ -427,8 +446,7 @@ def run_iteration(num):
                         log(f"iter {num}: stream-error - resumed #{reprompts}")
                 elif idle_prompt and stop_mode() is None:
                     idle_strikes += 1
-                    cm = re.search(r"Context (\d+)% used", txt)
-                    pct = int(cm.group(1)) if cm else 0
+                    pct = context_used_percent(txt) or 0
                     if idle_strikes >= 2 and reprompts < int(CONF["REPROMPT_MAX"]) and (
                         now - last_reprompt >= float(CONF["REPROMPT_MIN_S"])
                     ):

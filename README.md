@@ -30,6 +30,9 @@ research fronts alternating inside a single loop on one GPU box.
 - **Race-free prompt injection**: text and Enter go as separate `screen stuff`
   packets; after `INJECT_VERIFY_S` the loop re-checks the screen
   (`Context 0%` + no `Working`) and re-sends Enter if the prompt got stuck.
+- **Process-local TUI sessions**: `TUI_EXTRA_ARGS=--no-daemon` keeps Codex's
+  shared background server out of the loop, so closing the GNU screen window
+  closes that iteration. The flag is never passed to `codex exec`.
 - **Backpressure, for real**: `MAX_ITER_MINUTES` (kill runaway sessions),
   stall detection via TUI-log mtime, suspiciously-short-session detection,
   exit-code checks, a screen window vanishing without the marker = alert with
@@ -43,19 +46,24 @@ research fronts alternating inside a single loop on one GPU box.
   tuning prompts and thresholds requires no restart.
 - **systemd unit per project**: `Restart=always`, starts on boot.
 
-Deliberately *not* done: tracking context-window percentage. Some providers
-(e.g. vLLM's `responses` API) report usage cumulatively and only at session
-end - it cannot be monitored live. Hence the marker protocol + a session time
-cap instead.
+Deliberately *not* done: assuming a live context-window percentage is always
+available. Some providers (e.g. vLLM's `responses` API) report usage
+cumulatively and only at session end. When Codex does display a percentage,
+both `Context N% used` and `N% context left` are understood; otherwise the
+marker protocol + a session time cap remain the fallback.
 
 ## Requirements
 
 - Linux + systemd (optional; without it run the loop manually),
 - GNU screen, python3 (>=3.9),
-- codex CLI with the project directory trusted (`[projects."<dir>"]` in
+- codex CLI (tested with 0.167.0) with the project directory trusted
+  (`[projects."<dir>"]` in
   `~/.codex/config.toml`) - otherwise the TUI asks for trust and the loop
   stalls; the installer warns about a missing entry,
 - optional: signal-cli (for phone alerts), qrencode (terminal QR).
+
+For a Codex CLI older than 0.167.0 that does not support `--no-daemon`, set
+`TUI_EXTRA_ARGS=` in `codexloop.conf` (or supply compatible TUI-only flags).
 
 ## Install on a new machine
 
