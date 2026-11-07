@@ -1,4 +1,4 @@
-# codexloop
+# codex-loop
 
 Unattended, continuous session loop for the [codex CLI](https://github.com/openai/codex)
 agent, with a live window you can watch and phone alerts only when something
@@ -44,7 +44,7 @@ research fronts alternating inside a single loop on one GPU box.
   fronts never fight over the same files.
 - **Hot configuration**: `codexloop.conf` is re-read between iterations;
   tuning prompts and thresholds requires no restart.
-- **systemd unit per project**: `Restart=always`, starts on boot.
+- **systemd unit per project**: restarts on failure, starts on boot.
 
 Deliberately *not* done: assuming a live context-window percentage is always
 available. Some providers (e.g. vLLM's `responses` API) report usage
@@ -65,10 +65,31 @@ marker protocol + a session time cap remain the fallback.
 For a Codex CLI older than 0.167.0 that does not support `--no-daemon`, set
 `TUI_EXTRA_ARGS=` in `codexloop.conf` (or supply compatible TUI-only flags).
 
+## Safety and privacy
+
+The default configuration passes `--dangerously-bypass-approvals-and-sandbox`
+to Codex. This lets the agent execute commands, modify files, and use the
+network without interactive approval. Use it only with trusted prompts and
+projects, ideally under a dedicated unprivileged account or in a container.
+Remove that flag from `CODEX_ARGS` if you want Codex to ask for approval, but
+note that unattended iterations may then wait for input.
+
+The generated system service runs as root unless you add a `User=` directive.
+For a system-wide installation, create a dedicated user, adjust ownership of
+the deployment, and review the generated unit before starting it. Alternatively,
+install with `--no-systemd` and run the loop as an unprivileged user.
+
+`HEALTHCHECK_CMD` and `HEALTHFIX_CMD` run through the shell, so treat the config
+as executable code. Keep alternate-provider credentials outside the repository
+in a chmod-600 file. Logs contain full agent transcripts and may include source
+code, paths, prompts, or secrets; runtime logs and state are git-ignored, but
+you should still restrict access to the deployment directory and never publish
+those files.
+
 ## Install on a new machine
 
 ```bash
-git clone https://github.com/kacper-daftcode/codexloop && cd codexloop
+git clone https://github.com/kacper-daftcode/codex-loop && cd codex-loop
 bash install.sh /path/to/project --name myproj
 # review <project>/codexloop/codexloop.conf (PROMPT, thresholds, FRONT2_*)
 systemctl enable --now codexloop-myproj
@@ -80,6 +101,10 @@ bash <project>/codexloop/signal-setup.sh
 `install.sh --with-signal` runs the pairing as part of the install; by default
 the Signal step is skipped and can be done any time later (no loop restart
 needed).
+
+The default installer writes `/etc/systemd/system/codexloop-<name>.service` and
+therefore needs sufficient privileges. Use `--no-systemd` for an unprivileged,
+manual installation. Review the safety notes above before starting either mode.
 
 ## Controls
 
@@ -108,8 +133,23 @@ needed).
    window.
 3. Need a human? `echo 'BLOCKED: reason' > HUMAN_NEEDED`.
 
-Tune `NATURAL_END_HINT` (default "about 40% of the context window") to your
-model/workflow.
+Tune `NATURAL_END_HINT` (default "about 30% of the context window") and
+`WRAP_CTX_PCT` (default 35%) to your model/workflow.
+
+## Optional exec mode and model rotation
+
+Set `EXEC_MODE=1` to run one-shot `codex exec` iterations instead of the TUI.
+This is useful on hosts where GNU screen or the TUI is unreliable. Timeouts,
+stop files, summaries, health checks, and notifications still apply; interactive
+watching and composer re-prompts do not. `EXEC_EXTRA_ARGS` applies only to exec
+mode, while `TUI_EXTRA_ARGS` applies only to the TUI.
+
+To compare providers, set `ALT_MODEL_EVERY_N=N` and `ALT_MODEL`. Every N-th
+iteration then uses the alternate model in either mode. Optional settings are
+`ALT_PROVIDER`, `ALT_MODEL_CONTEXT_WINDOW`, `ALT_REASONING_EFFORT`, and
+`ALT_CODEX_BIN`. If `ALT_API_KEY_FILE` points to a chmod-600 KEY=VALUE file, its
+entries are added to the alternate iteration's environment. Keep this file
+outside the repository.
 
 ## Logs
 
@@ -121,9 +161,15 @@ model/workflow.
 
 A deployment is just a directory inside the project holding the conf and
 copies of the scripts. To update: copy the new files over, then
-`touch .../STOP` (the restart happens after the current iteration ends
-naturally; systemd picks the new code up). Legacy keys `OPT_EVERY_N` /
-`OPT_PROMPT` are read as aliases of `FRONT2_EVERY_N` / `FRONT2_PROMPT`.
+`touch .../STOP` and wait for the current iteration to finish. Once the service
+becomes inactive, run `systemctl start codexloop-<name>` to load the new code.
+Legacy keys `OPT_EVERY_N` / `OPT_PROMPT` are read as aliases of `FRONT2_EVERY_N`
+/ `FRONT2_PROMPT`.
+
+The repository was renamed from `codexloop` to `codex-loop`. Deployment
+directories, configuration filenames, environment-variable prefixes, and
+systemd service names intentionally keep the `codexloop` spelling for backwards
+compatibility.
 
 ## Known pitfalls (deployment history)
 

@@ -57,7 +57,7 @@ DEFAULTS = {
     # (for hosts where the TUI layer is broken - see TUI-SILENT-DISCARD).
     "EXEC_MODE": "0",
     "EXEC_EXTRA_ARGS": "--skip-git-repo-check",
-    # ALT model A/B rotation (exec-mode only; default 0 = off). The N-th
+    # ALT model A/B rotation (exec + TUI; default 0 = off). The N-th
     # iteration of each cycle spawns codex on the alternate provider. The
     # provider block must exist in ~/.codex/config.toml; API keys are read
     # OUT-OF-REPO from ALT_API_KEY_FILE (KEY=VALUE lines, chmod 600).
@@ -319,7 +319,7 @@ def run_iteration(num):
     ]
     log(f"iter {num}: start [front={front}] (screen -x {screen})")
     with open(err_path, "a") as errf:
-        proc = subprocess.Popen(cmd, stdout=errf, stderr=errf)
+        proc = subprocess.Popen(cmd, stdout=errf, stderr=errf, env=env)
 
         # TUI startup + prompt injection. Enter goes in a SEPARATE stuff -
         # a single "text+\r" packet can be swallowed like a paste w/o submit.
@@ -629,7 +629,7 @@ def alt_brain(num, extra):
     env = None
     codex_bin = CONF["CODEX_BIN"]
     every = int(CONF.get("ALT_MODEL_EVERY_N") or 0)
-    if every > 0 and CONF.get("ALT_MODEL") and (num % every) == (every - 1):
+    if every > 0 and CONF.get("ALT_MODEL") and num % every == 0:
         brain = CONF["ALT_MODEL"]
         extra = list(extra)
         extra += ["-c", f"model={brain}"]

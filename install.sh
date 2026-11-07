@@ -89,7 +89,7 @@ WorkingDirectory=$PROJECT
 Environment=HOME=$HOME
 Environment=PATH=$PATH
 ExecStart=$PYBIN $DEST/codexloop.py
-Restart=always
+Restart=on-failure
 RestartSec=30
 
 [Install]

@@ -8,3 +8,7 @@ STOP
 STOPNOW
 ITER_DONE
 HUMAN_NEEDED
+.env
+.env.*
+!.env.example
+.DS_Store
