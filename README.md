@@ -27,8 +27,8 @@ research fronts alternating inside a single loop on one GPU box.
 - **Model-stream recovery**: a dropped connection to the model server leaves
   the TUI frozen on an error banner (`stream disconnected ...`). Detected the
   same way; the loop auto-resumes the session and notifies you.
-- **Race-free prompt injection**: text and Enter go as separate `screen stuff`
-  packets; after `INJECT_VERIFY_S` the loop re-checks the screen
+- **Race-free prompt injection**: text goes in 400-character chunks and Enter
+  as a separate `screen stuff` packet; after `INJECT_VERIFY_S` the loop re-checks the screen
   (`Context 0%` + no `Working`) and re-sends Enter if the prompt got stuck.
 - **Process-local TUI sessions**: `TUI_EXTRA_ARGS=--no-daemon` keeps Codex's
   shared background server out of the loop, so closing the GNU screen window
@@ -127,9 +127,9 @@ naturally; systemd picks the new code up). Legacy keys `OPT_EVERY_N` /
 
 ## Known pitfalls (deployment history)
 
-- After a long prompt body, Enter must go as a separate `stuff` - otherwise
-  it can be treated as a paste without actually submitting (hence
-  `INJECT_VERIFY_S`).
+- `screen stuff` can silently discard an oversized command. Send long prompt
+  bodies in 400-character chunks, then Enter separately (and keep
+  `INJECT_VERIFY_S` as the final check).
 - `Worked for ...` means the turn ended and the TUI sits waiting for a human
   - without the re-prompt watchdog the loop idles for hours.
 - Model-stream errors need an explicit resume; plain idleness detection is

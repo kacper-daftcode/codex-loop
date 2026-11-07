@@ -258,7 +258,18 @@ def ensure_healthy():
 
 def screen_cmd(*args):
     _, screen, _ = conf_resolved()
-    return subprocess.run(["screen", "-S", screen, *args], capture_output=True)
+    result = subprocess.run(["screen", "-S", screen, *args], capture_output=True)
+    if result.returncode != 0 or result.stderr:
+        log(
+            "screen command failed: "
+            f"returncode={result.returncode} stderr={result.stderr.decode(errors='replace')}"
+        )
+    return result
+
+
+def screen_stuff(text):
+    for offset in range(0, len(text), 400):
+        screen_cmd("-p", "0", "-X", "stuff", text[offset:offset + 400])
 
 
 class IterResult:
@@ -313,7 +324,7 @@ def run_iteration(num):
         # TUI startup + prompt injection. Enter goes in a SEPARATE stuff -
         # a single "text+\r" packet can be swallowed like a paste w/o submit.
         time.sleep(float(CONF["READY_WAIT_S"]))
-        screen_cmd("-p", "0", "-X", "stuff", prompt)
+        screen_stuff(prompt)
         time.sleep(2)
         screen_cmd("-p", "0", "-X", "stuff", "\r")
         injected_at = time.monotonic()
@@ -440,7 +451,7 @@ def run_iteration(num):
                             "continue from where you stopped (session-end protocol "
                             "unchanged)"
                         )
-                        screen_cmd("-p", "0", "-X", "stuff", cont)
+                        screen_stuff(cont)
                         time.sleep(2)
                         screen_cmd("-p", "0", "-X", "stuff", "\r")
                         log(f"iter {num}: stream-error - resumed #{reprompts}")
@@ -468,7 +479,7 @@ def run_iteration(num):
                                 f"{BASE_DIR}/state/LAST_SUMMARY.txt + touch "
                                 f"{BASE_DIR}/ITER_DONE"
                             )
-                            screen_cmd("-p", "0", "-X", "stuff", cont)
+                            screen_stuff(cont)
                             time.sleep(2)
                             screen_cmd("-p", "0", "-X", "stuff", "\r")
                             log(
@@ -485,7 +496,7 @@ def run_iteration(num):
                                 "the protocol: summary to state/LAST_SUMMARY.txt + "
                                 f"touch {BASE_DIR}/ITER_DONE"
                             )
-                            screen_cmd("-p", "0", "-X", "stuff", cont)
+                            screen_stuff(cont)
                             time.sleep(2)
                             screen_cmd("-p", "0", "-X", "stuff", "\r")
                             log(
